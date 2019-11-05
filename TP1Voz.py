@@ -1,18 +1,21 @@
 import pyaudio
 import wave
 import numpy as np
-from scipy import signal
-import time
+import curses
 from audiolazy import lazy_lpc
-import matplotlib.pyplot as plt
+from scipy import signal
 
-N=13
+N=13#Para un filtro de orden 12
 a = np.array([1])
 b = np.zeros(N)
 b[0] = 1
-ziSignalA = signal.lfilter_zi(b, a)
-ziSignalB = signal.lfilter_zi(a, b)
-ncalls=0
+zi = signal.lfilter_zi(a, b) #Estados iniciales
+
+buffer_count = 0# Cuenta de cuantas veces se llamo al callback
+
+BUFFER_SIZE = 512# Tamaño del ventaneo
+
+freq = 100#frecuencia inicial
 
 def wav2Float(dataIn): #Del formato del wav (buffer de bytes en codif int16) a array de floats
     dataOut = np.frombuffer(dataIn, dtype=np.int16)
@@ -25,41 +28,58 @@ def float2wav(dataIn):
     dataR = bytes(dataOut)
     return dataR
 
-def callback(in_data, frame_count, time_info, flag): #Función que se llama cuando hay (framerate) samples nuevos de inputs
-    ##Obtiene en array de floats la música del .wav y el mic.
-    global ziSignalA, ziSignalB
-    global ncalls
-    retVal = pyaudio.paContinue
-    signalA = wav2Float(wf.readframes(frame_count))
-    signalB = wav2Float(in_data)
-    ##procesamiento
-    ncalls=ncalls+1
+# Callback se llama cuando hay "frames_per_buffer" nuevos samples en el wav abierto, y toma tambien esa cantiad de
+# muestras de audio del microfono.
+def callback(in_data, frame_count, time_info, flag):
+    global zi, buffer_count, BUFFER_SIZE, freq
+    voice = wav2Float(in_data) #Se pasan a float los samples de la voz
+    aM = np.asarray(lazy_lpc.lpc.autocor(voice, 12).numerator)# Se obtienen los coeficientes LPC de la voz
 
-    #aMSignalA=np.asarray(lazy_lpc.lpc.autocor(signalA, 12).numerator)
-    aMSignalB=np.asarray(lazy_lpc.lpc.autocor(signalB, 12).numerator)
-
-    #eSignalA, ziSignalA = signal.lfilter(aMSignalA, np.array([1]), signalA, zi=ziSignalA)
-    out, ziSignalB = signal.lfilter(np.array([1]), aMSignalB, signalA, zi=ziSignalB)
-    out *= 0.01
-
-    # out = music
-    # if (ncalls>80): ## Luego de 2 segundos para
-    #    plt.plot(music)
-    #    plt.show
-    #    retVal=pyaudio.paAbort
-    ##Envía output
-    return float2wav(out), retVal
+    duty = 0.5 # Duty de la onda cuadrada
+    Av = 0.1# Amplitud
+    zeros = np.zeros((BUFFER_SIZE,))
+    T = int(wf.getframerate() / freq)# Período
+    # Se construye un tren de pulsos de frecuencia determinada
+    for j in range(zeros.shape[0]):
+        # ex es la cantidad de muestras por encima de donde deberia comenzar la delta
+        ex = ((j + BUFFER_SIZE * buffer_count) % T)
+        if (ex / T) < duty:
+            zeros[j] = Av
 
 
-wf = wave.open("GH3-SGB.wav", 'rb') ##Archivo de música que va a leer
+    outPrev, zn = signal.lfilter(np.array([1]), aM, zeros, zi=zi) #Filtrado previo para aplicar control de ganancia
+    gain=np.std(outPrev)/np.std(zeros);
+    out, zi = signal.lfilter(np.array([1/gain]), aM, zeros, zi=zi) #Filtrado final
+
+    buffer_count += 1
+
+    return float2wav(out), pyaudio.paContinue
+
+
+wf = wave.open("GH3-SGB.wav", 'rb') # Archivo de música que va a leer
 p = pyaudio.PyAudio()
 stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
                 channels=wf.getnchannels(),
                 rate=wf.getframerate(),
-                frames_per_buffer=512,
+                frames_per_buffer=BUFFER_SIZE,
                 output=True,
                 input=True,
                 stream_callback=callback)
-while stream.is_active():
-    time.sleep(0.1)
+stdscr = curses.initscr()
+k=0
+d = {
+    'a': 110,
+    's': 123.5,
+    'd': 130.8,
+    'f': 146.8,
+    'g': 164.8,
+    'h': 174.6,
+    'j': 196,
+    'k': 220
+}
+while k != ord('q'):
+    k = stdscr.getch()
+    for i in d:
+        if k == ord(i):
+            freq = d[i]
 stream.close()
