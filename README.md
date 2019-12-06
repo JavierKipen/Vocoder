@@ -1,2 +1,2 @@
 # Vocoder
-Vocoder en tiempo real sobre una grabación en wav escrito en Python
+Vocoder in real time with the keyboard used to set the frequency of the emulated glotal pulses. Done with Ezequiel Morcillo
